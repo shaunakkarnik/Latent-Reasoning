@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "latent-geometry"
+version = "0.1.0"
+description = "Geometry-supervised continuous latent reasoning for Qwen2.5-VL"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.6,<3", "transformers==4.57.1", "Pillow>=10", "numpy>=1.26,<3"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+teacher = ["vggt @ git+https://github.com/facebookresearch/vggt.git@a288dd0f14786c93483e45524328726ab7b1b4ce", "torchvision>=0.21,<1"]
+
+[project.scripts]
+latent-geometry = "latent_geometry.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

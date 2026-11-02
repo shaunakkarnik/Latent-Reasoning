@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local research artifacts and pretrained weights
+runs/
+data/
+feature_cache/
+checkpoints/
+*.pt
+*.safetensors

@@ -1,0 +1,9 @@
+{
+  "student": "Qwen/Qwen2.5-VL-3B-Instruct",
+  "student_revision": "main",
+  "teacher_dim": 2048,
+  "pool_height": 4,
+  "pool_width": 4,
+  "alignment_weight": 1.0,
+  "max_pixels": 401408
+}
