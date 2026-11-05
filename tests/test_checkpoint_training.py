@@ -4,8 +4,9 @@ import pytest
 import torch
 
 from latent_geometry.checkpoint import restore_checkpoint, save_checkpoint
+from latent_geometry.cli import load_run
 from latent_geometry.config import Stage
-from latent_geometry.smoke import tiny_model
+from helpers import tiny_model
 from latent_geometry.training import train
 
 
@@ -50,7 +51,7 @@ class FixtureEncoder:
         return {**self.example, "teacher_features": None}
 
 
-def test_training_runner_resume_matches_uninterrupted(tmp_path, example):
+def test_training_runner_resume_matches_uninterrupted(tmp_path, example, monkeypatch):
     # Exercise real training-loop bookkeeping without downloading a tokenizer.
     records = [{"id": "fixture", "scene_id": "scene", "split": "train", "question": "Q", "answer": "A"}]
     encoder = FixtureEncoder(example)
@@ -67,11 +68,21 @@ def test_training_runner_resume_matches_uninterrupted(tmp_path, example):
     interrupted = tiny_model()
     restore_checkpoint(initial, interrupted)
     train(interrupted, output_dir=tmp_path / "interrupted", steps=1, **kwargs)
-    resumed = tiny_model()
-    resumed.set_stage(Stage.REFINEMENT)
     checkpoint = tmp_path / "interrupted" / "checkpoint-000001"
-    restore_checkpoint(checkpoint, resumed)
+    # CLI construction must leave weight loading to train() when resuming.
+    monkeypatch.setattr("latent_geometry.cli.load_student",
+                        lambda *args, **kwargs: (tiny_model().backbone, None, 60, 61))
+    original_load = torch.load
+    checkpoint_reads = []
+
+    def count_checkpoint_reads(path, **kwargs):
+        checkpoint_reads.append(path)
+        return original_load(path, **kwargs)
+
+    monkeypatch.setattr(torch, "load", count_checkpoint_reads)
+    resumed, _, _ = load_run(checkpoint, load_weights=False)
     train(resumed, output_dir=tmp_path / "resumed", steps=3, resume=checkpoint, **kwargs)
+    assert checkpoint_reads == [checkpoint / "state.pt"]
     for a, b in zip(continuous.parameters(), resumed.parameters()):
         torch.testing.assert_close(a, b, rtol=0, atol=0)
     metrics = [json.loads(line) for line in (tmp_path / "resumed" / "metrics.jsonl").read_text().splitlines()]

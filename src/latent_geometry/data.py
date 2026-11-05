@@ -11,6 +11,7 @@ from .geometry import cache_signature, image_sha256, load_feature
 def read_manifest(path):
     path = Path(path).resolve()
     records, ids, scene_splits, image_splits = [], set(), {}, {}
+    image_hashes, checked_paths = {}, set()
     for line_number, line in enumerate(path.read_text().splitlines(), 1):
         if not line.strip():
             continue
@@ -31,9 +32,14 @@ def read_manifest(path):
         for field in ("image", "teacher_feature"):
             if field in record:
                 record[field] = str((path.parent / record[field]).resolve())
-                if not Path(record[field]).is_file():
-                    raise ValueError(f"Missing {field}: {record[field]}")
-        digest = image_sha256(record["image"])
+                if record[field] not in checked_paths:
+                    if not Path(record[field]).is_file():
+                        raise ValueError(f"Missing {field}: {record[field]}")
+                    checked_paths.add(record[field])
+        image_path = record["image"]
+        if image_path not in image_hashes:
+            image_hashes[image_path] = image_sha256(image_path)
+        digest = image_hashes[image_path]
         if digest in image_splits and image_splits[digest] != split:
             raise ValueError("Identical image content occurs across splits")
         image_splits[digest] = split
@@ -46,21 +52,30 @@ def read_manifest(path):
 
 def manifest_fingerprint(records):
     """Content-based provenance, independent of absolute workspace paths."""
-    rows = []
+    rows, feature_hashes = [], {}
     for record in records:
         row = {k: v for k, v in record.items() if k not in ("image", "teacher_feature")}
         if "teacher_feature" in record:
-            row["teacher_feature_sha256"] = image_sha256(record["teacher_feature"])
+            feature_path = record["teacher_feature"]
+            if feature_path not in feature_hashes:
+                feature_hashes[feature_path] = image_sha256(feature_path)
+            row["teacher_feature_sha256"] = feature_hashes[feature_path]
         rows.append(row)
     return cache_signature({"records": rows})
 
 
 def validate_feature_policy(records, config):
     signature = None
+    checked_features = {}
     for record in records:
         if "teacher_feature" not in record:
             raise ValueError("Extract teacher features before warmup/alignment training")
-        _, metadata = load_feature(record["teacher_feature"], expected_image_hash=record["image_sha256"],
+        feature_path = record["teacher_feature"]
+        if feature_path in checked_features:
+            if checked_features[feature_path] != record["image_sha256"]:
+                raise ValueError(f"Teacher cache belongs to a different source image: {feature_path}")
+            continue
+        _, metadata = load_feature(feature_path, expected_image_hash=record["image_sha256"],
                                    num_latents=config.num_latents, feature_dim=config.teacher_dim)
         if metadata.get("pool_shape") != [config.pool_height, config.pool_width]:
             raise ValueError("Cache spatial layout differs from model configuration")
@@ -72,6 +87,7 @@ def validate_feature_policy(records, config):
         if signature is not None and current != signature:
             raise ValueError("Manifest mixes incompatible teacher extraction policies")
         signature = current
+        checked_features[feature_path] = record["image_sha256"]
     return signature
 
 
@@ -104,8 +120,7 @@ class ExampleEncoder:
             raise ValueError("Answer exceeds max_answer_tokens")
         features = None
         if require_features:
-            features, _ = load_feature(record["teacher_feature"],
-                                       expected_image_hash=record["image_sha256"],
-                                       num_latents=self.config.num_latents, feature_dim=self.config.teacher_dim)
+            # Image association and extraction policy were checked once during setup.
+            features, _ = load_feature(record["teacher_feature"])
             features = features.unsqueeze(0)
         return {"inputs": inputs, "answer_ids": torch.tensor([ids]), "teacher_features": features}

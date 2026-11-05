@@ -84,13 +84,13 @@ class QwenBackbone(nn.Module):
             input_ids=ids, image_grid_thw=grid, attention_mask=mask)
         return Sequence(embeddings, positions)
 
-    def decode(self, sequence, *, past_key_values=None, use_cache=False, offset=0):
+    def decode(self, sequence, *, past_key_values=None, use_cache=False, cached_token_count=0):
         length = sequence.embeddings.shape[1]
         return self.model.model.language_model(
             inputs_embeds=sequence.embeddings,
             position_ids=sequence.positions,
-            attention_mask=torch.ones((1, offset + length), dtype=torch.long, device=self.device),
-            cache_position=torch.arange(offset, offset + length, device=self.device),
+            attention_mask=torch.ones((1, cached_token_count + length), dtype=torch.long, device=self.device),
+            cache_position=torch.arange(cached_token_count, cached_token_count + length, device=self.device),
             past_key_values=past_key_values,
             use_cache=use_cache,
             return_dict=True,

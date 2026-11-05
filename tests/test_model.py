@@ -3,7 +3,7 @@ import torch
 from torch.nn import functional as F
 
 from latent_geometry.config import Stage
-from latent_geometry.smoke import tiny_model
+from helpers import tiny_model
 
 
 def test_backbone_preserves_native_qwen_image_embeddings_and_positions(model, example):
@@ -102,8 +102,8 @@ def test_refinement_uses_no_oracle_and_preserves_recurrent_graph(model, example,
     assert all(v.grad is not None and v.grad.abs().sum() > 0 for v in vectors)
     assert output.alignment_loss.item() == 0
     # Explicitly verify the next generated vector depends on the preceding one.
-    sequence, _, _, _ = model.rollout(prefix)
-    assert sequence.embeddings.grad_fn is not None
+    rollout = model.rollout(prefix)
+    assert rollout.full_sequence.embeddings.grad_fn is not None
 
 
 @pytest.mark.parametrize("with_image", [True, False])

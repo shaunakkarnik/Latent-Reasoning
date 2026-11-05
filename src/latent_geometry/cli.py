@@ -14,11 +14,15 @@ from .model import LatentReasoner
 from .training import train
 
 
-def load_run(checkpoint=None, config_path=None, *, device="cpu"):
+def load_run(checkpoint=None, config_path=None, *, device="cpu", load_weights=True):
     if checkpoint and config_path:
         raise ValueError("A checkpoint supplies its configuration; do not also pass --config")
-    config = (LatentConfig.load(Path(checkpoint) / "latent_config.json") if checkpoint else
-              LatentConfig.load(config_path) if config_path else LatentConfig())
+    if checkpoint:
+        config = LatentConfig.load(Path(checkpoint) / "latent_config.json")
+    elif config_path:
+        config = LatentConfig.load(config_path)
+    else:
+        config = LatentConfig()
     processor_path = Path(checkpoint) / "processor" if checkpoint else None
     backbone, processor, start_id, end_id = load_student(
         config, dtype=torch.float32, device=device, processor_path=processor_path)
@@ -26,7 +30,8 @@ def load_run(checkpoint=None, config_path=None, *, device="cpu"):
     if checkpoint:
         metadata = json.loads((Path(checkpoint) / "metadata.json").read_text())
         model.set_stage(metadata["stage"])
-        restore_checkpoint(checkpoint, model)
+        if load_weights:
+            restore_checkpoint(checkpoint, model)
     return model, processor, ExampleEncoder(processor, config)
 
 
@@ -73,16 +78,9 @@ def main(argv=None):
     generation.add_argument("--question", required=True)
     generation.add_argument("--max-new-tokens", type=int, default=64)
     generation.add_argument("--no-cache", action="store_true")
-    smoke = sub.add_parser("smoke", help="Offline tiny random Qwen: three stages, checkpoint, and inference")
-    smoke.add_argument("--output-dir", default="runs/smoke")
-    smoke.add_argument("--steps", type=int, default=12)
     for command in (extract, training, evaluation, generation):
         command.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args(argv)
-    if args.command == "smoke":
-        from .smoke import run_smoke
-        print(json.dumps(run_smoke(args.output_dir, steps=args.steps), indent=2))
-        return
     if args.command == "extract":
         records = read_manifest(args.manifest)
         target = Path(args.output_manifest)
@@ -92,8 +90,12 @@ def main(argv=None):
         extractor = VGGTExtractor(checkpoint=args.teacher, revision=args.teacher_revision, layer=args.layer,
                                   pool_shape=(config.pool_height, config.pool_width), device=args.device,
                                   dtype=torch.float32 if args.fp32 else torch.bfloat16)
+        feature_paths = {}
         for record in records:
-            record["teacher_feature"] = str(extractor.cache(record["image"], args.cache_dir))
+            image_path = record["image"]
+            if image_path not in feature_paths:
+                feature_paths[image_path] = str(extractor.cache(image_path, args.cache_dir))
+            record["teacher_feature"] = feature_paths[image_path]
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("x") as stream:
             for record in records:
@@ -106,7 +108,10 @@ def main(argv=None):
             raise ValueError("Alignment/refinement require --init-from or --resume")
         # Seed before initializing newly added boundary embeddings/heads.
         torch.manual_seed(args.seed)
-        model, processor, encoder = load_run(checkpoint, args.config, device=args.device)
+        # Resume restores weights with optimizer/RNG in train(), in a single read.
+        # New stages initialize weights here and start with a fresh optimizer.
+        model, processor, encoder = load_run(
+            checkpoint, args.config, device=args.device, load_weights=not bool(args.resume))
         if args.init_from:
             allowed = {Stage.WARMUP: {Stage.WARMUP}, Stage.ALIGNMENT: {Stage.WARMUP, Stage.ALIGNMENT},
                        Stage.REFINEMENT: {Stage.ALIGNMENT, Stage.REFINEMENT}}

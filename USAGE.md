@@ -1,12 +1,6 @@
-# Geometry-supervised latent reasoning
+# Usage
 
-A standalone prototype for the method in [RESEARCH_GOAL.md](RESEARCH_GOAL.md):
-train Qwen2.5-VL to predict continuous geometry latents supervised by frozen VGGT
-features, then answer using its own recurrent latents without VGGT.
-
-The default configuration uses **Qwen2.5-VL-3B-Instruct and 16 latent vectors**.
-The language model, input embeddings, and output head are trainable. The student
-vision encoder and its existing merger remain frozen in every stage.
+For the goal, method, and experiment sequence, see [RESEARCH_GOAL.md](RESEARCH_GOAL.md).
 
 ## Install and verify without model downloads
 
@@ -17,49 +11,9 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[test]'
 pytest -q
-latent-geometry smoke --output-dir runs/smoke
 ```
 
-The smoke command creates a tiny, randomly initialized **real Qwen2.5-VL
-architecture**, uses synthetic image/teacher tensors, trains all three stages,
-checks loss reduction and frozen vision weights, compares cached and uncached
-decoding, and saves/reloads/resumes a checkpoint. It generates exactly 16
-continuous latents. No pretrained weights or research dataset are downloaded.
-Use a fresh output directory for another smoke run.
-
-This verifies model plumbing, not spatial-reasoning quality or the usefulness of
-VGGT supervision. Pretrained Qwen/VGGT execution and GPU memory/throughput still
-need validation on the cluster.
-
-## Three training stages
-
-Let `x` be the image/question prompt (ending at the assistant generation prefix),
-`t_i` a projected VGGT target, `z_i` a generated vector, and `y` the answer.
-
-| Stage | Model inputs | Objective | Trainable new modules |
-| --- | --- | --- | --- |
-| `warmup` | `x, start, t_1 ... t_K, end, y` | Answer cross-entropy | Oracle adapter |
-| `alignment` | Same oracle-conditioned sequence | Answer CE + weighted latent MSE | Latent prediction head |
-| `refinement` | `x, start, z_1 ... z_K, end, y` | Answer CE only | Latent prediction head |
-
-The language model is trained in all three stages. The oracle adapter is frozen
-after warmup. In alignment, the state after `start` predicts `t_1`, the state
-after consuming `t_1` predicts `t_2`, and so on. Each prediction precedes its
-target input, preventing same-position target leakage. Latent MSE is averaged
-over slots and channels. Vocabulary CE supervises `end` and the answer tokens,
-including the assistant terminator; the prompt, fixed `start`, and latent slots
-are masked from vocabulary CE. The `end` boundary is a fixed control at inference.
-
-Refinement uses all K generated vectors with **no detach and no alignment
-loss**. Answer gradients propagate through the entire recurrent computation.
-The initial implementation recomputes the prefix at each latent step during
-training and uses non-reentrant gradient checkpointing. This is a correctness
-reference with substantial compute cost; profile it before a long run.
-
-Inference uses a KV cache and explicit multimodal position IDs. The final latent
-is consumed before the end boundary and answer. An uncached reference is
-available with `--no-cache`. No teacher module is part of the student checkpoint
-or imported by generation.
+The tests use a tiny random Qwen model and synthetic features without downloading pretrained weights. They check gradients, frozen parameters, shifted supervision, cached decoding, and checkpoint resumption. Pretrained execution and GPU memory/throughput still need validation on the cluster.
 
 ## Dataset-independent manifest
 
@@ -154,6 +108,8 @@ manifest with no `teacher_feature` fields. Set feature dimensions, pool size, an
 alignment weight in the initial JSON config; subsequent stages inherit the
 checkpoint configuration. Stage lengths and learning rates remain experimental.
 
+Shared images are hashed once and shared feature files are validated once during setup. Each example still loads its own pooled features; the dataset is not retained in GPU memory.
+
 The runner uses FP32 model/optimizer storage with CUDA BF16 autocast by default,
 gradient clipping, gradient accumulation, and non-reentrant gradient
 checkpointing. CPU verification uses FP32. This version is **single-process**;
@@ -203,17 +159,3 @@ writes predictions, latent norms, latency, and per-scene normalized exact match.
 Exact match is a plumbing metric; add the selected dataset's scoring rules before
 making performance claims. Geometry probes, crop/answer-only baselines, controlled
 interventions, confidence intervals, and large research runs remain later work.
-
-## References and implementation scope
-
-The code is original and does not vendor or monkey-patch other training frameworks.
-Relevant references inspected for supervision and model-interface conventions:
-
-- [LVR paper](https://arxiv.org/abs/2509.24251) and [forward implementation](https://github.com/VincentLeebang/lvr/blob/main/src/train/monkey_patch_forward.py).
-- [LanteRn](https://github.com/GuilhermeViveiros/LantErn), including its [compression helper](https://github.com/GuilhermeViveiros/LantErn/blob/main/src/models/utils.py). Our pooling preserves the 2D grid rather than grouping consecutive tokens and dropping remainders.
-- [Mirage](https://vlm-mirage.github.io/) for grounding followed by text-supervised latent refinement. The adapter warmup is specific to this prototype.
-- [Qwen2.5-VL implementation, transformers 4.57.1](https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py).
-- [VGGT](https://github.com/facebookresearch/vggt), used as an optional external dependency under its upstream license.
-
-The dataset, cluster scheduler, distributed strategy, and actual pretrained GPU
-training run remain to be selected/validated. No accuracy improvement is claimed.

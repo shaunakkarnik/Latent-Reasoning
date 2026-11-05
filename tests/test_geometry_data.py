@@ -45,7 +45,7 @@ def test_feature_cache_rejects_wrong_image_and_shape(tmp_path):
         load_feature(path, num_latents=4)
 
 
-def test_manifest_rejects_scene_and_image_leakage(tmp_path):
+def test_manifest_rejects_scene_and_image_leakage(tmp_path, monkeypatch):
     for name, color in (("a", "red"), ("b", "blue")):
         Image.new("RGB", (8, 8), color).save(tmp_path / f"{name}.png")
     rows = [{"id": "a", "scene_id": "same", "image": "a.png", "question": "Where?", "answer": "Left", "split": "train"},
@@ -60,11 +60,21 @@ def test_manifest_rejects_scene_and_image_leakage(tmp_path):
     with pytest.raises(ValueError, match="Identical image"):
         read_manifest(path)
     rows[1]["image"] = "b.png"
+    rows.append({**rows[0], "id": "another-question"})
     path.write_text("\n".join(map(json.dumps, rows)))
-    assert len(read_manifest(path)) == 2
+    original_hash = image_sha256
+    hashed_paths = []
+
+    def count_image_hashes(path):
+        hashed_paths.append(path)
+        return original_hash(path)
+
+    monkeypatch.setattr("latent_geometry.data.image_sha256", count_image_hashes)
+    assert len(read_manifest(path)) == 3
+    assert len(hashed_paths) == 2
 
 
-def test_reject_mixed_extraction_policies(tmp_path):
+def test_reject_mixed_extraction_policies(tmp_path, monkeypatch):
     metadata = {"image_sha256": "image", "teacher": "vggt", "teacher_revision": "rev",
                 "aggregator_source_sha256": "source", "preprocess_source_sha256": "preprocess",
                 "layer": -1, "pool_shape": [1, 4], "preprocessing": "pad", "extraction_dtype": "fp32",
@@ -76,3 +86,15 @@ def test_reject_mixed_extraction_policies(tmp_path):
         records.append({"teacher_feature": str(path), "image_sha256": "image"})
     with pytest.raises(ValueError, match="incompatible"):
         validate_feature_policy(records, LatentConfig(teacher_dim=8, pool_height=1, pool_width=4))
+    feature_reads = []
+
+    def count_feature_reads(path, **kwargs):
+        feature_reads.append(path)
+        return load_feature(path, **kwargs)
+
+    monkeypatch.setattr("latent_geometry.data.load_feature", count_feature_reads)
+    validate_feature_policy([records[0], records[0]], LatentConfig(teacher_dim=8, pool_height=1, pool_width=4))
+    assert feature_reads == [records[0]["teacher_feature"]]
+    with pytest.raises(ValueError, match="different source image"):
+        validate_feature_policy([records[0], {**records[0], "image_sha256": "wrong"}],
+                                LatentConfig(teacher_dim=8, pool_height=1, pool_width=4))

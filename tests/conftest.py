@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from latent_geometry.smoke import tiny_example, tiny_model
+from helpers import tiny_example, tiny_model
 
 
 @pytest.fixture(autouse=True)

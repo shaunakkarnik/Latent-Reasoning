@@ -50,6 +50,14 @@ class GenerationOutput:
     latents: torch.Tensor
 
 
+@dataclass
+class RolloutOutput:
+    full_sequence: Sequence
+    latents: torch.Tensor
+    past_key_values: object
+    cached_token_count: int
+
+
 class LatentReasoner(nn.Module):
     def __init__(self, backbone, config: LatentConfig, start_id: int, end_id: int):
         super().__init__()
@@ -87,22 +95,25 @@ class LatentReasoner(nn.Module):
         """Generate exactly K vectors. Uncached mode preserves the full training graph."""
         if use_cache and self.training:
             raise ValueError("Cached rollout is inference-only; use uncached differentiable training")
-        sequence, current = prefix, prefix
-        cache, offset = None, 0
+        full_sequence = decoder_input = prefix
+        past_key_values, cached_token_count = None, 0
         vectors = []
         for _ in range(self.config.num_latents):
-            output = self.backbone.decode(current, past_key_values=cache, use_cache=use_cache, offset=offset)
+            output = self.backbone.decode(
+                decoder_input, past_key_values=past_key_values,
+                use_cache=use_cache, cached_token_count=cached_token_count)
             vector = self.latent_head(output.last_hidden_state[:, -1:])
             vectors.append(vector)
-            sequence = sequence.append(vector)
+            full_sequence = full_sequence.append(vector)
             if use_cache:
-                cache = output.past_key_values
-                offset += current.embeddings.shape[1]
-                current = Sequence(vector, sequence.positions[..., -1:])
+                past_key_values = output.past_key_values
+                cached_token_count += decoder_input.embeddings.shape[1]
+                decoder_input = Sequence(vector, full_sequence.positions[..., -1:])
             else:
-                current = sequence
+                decoder_input = full_sequence
         # The final generated vector has not been consumed by the cached decoder yet.
-        return sequence, torch.cat(vectors, dim=1), cache, offset
+        return RolloutOutput(full_sequence, torch.cat(vectors, dim=1),
+                             past_key_values, cached_token_count)
 
     def _answer_loss(self, hidden, prefix_length, answer_ids):
         # Fixed start control is masked. Predict latent_end from the final latent,
@@ -118,18 +129,22 @@ class LatentReasoner(nn.Module):
         if answer_ids.ndim != 2 or answer_ids.shape[0] != 1 or answer_ids.shape[1] == 0:
             raise ValueError("answer_ids must be a nonempty unpadded [1, length] tensor")
         prefix = self.prefix(inputs)
-        prefix_length = prefix.embeddings.shape[1]
         if self.stage == Stage.REFINEMENT:
-            sequence, latents, _, _ = self.rollout(prefix)
-        else:
-            if teacher_features is None:
-                raise ValueError("Warmup and alignment require pooled teacher features")
-            latents = self._targets(teacher_features)
-            if self.stage == Stage.ALIGNMENT:
-                latents = latents.detach()
-            sequence = prefix.append(latents)
+            return self._refinement_loss(prefix, answer_ids)
+        return self._oracle_conditioned_loss(prefix, answer_ids, teacher_features)
+
+    def _decode_answer(self, sequence, answer_ids):
         sequence = sequence.append(self.backbone.token(self.end_id)).append(self.backbone.embed(answer_ids))
-        hidden = self.backbone.decode(sequence).last_hidden_state
+        return self.backbone.decode(sequence).last_hidden_state
+
+    def _oracle_conditioned_loss(self, prefix, answer_ids, teacher_features):
+        if teacher_features is None:
+            raise ValueError("Warmup and alignment require pooled teacher features")
+        latents = self._targets(teacher_features)
+        if self.stage == Stage.ALIGNMENT:
+            latents = latents.detach()
+        prefix_length = prefix.embeddings.shape[1]
+        hidden = self._decode_answer(prefix.append(latents), answer_ids)
         answer_loss = self._answer_loss(hidden, prefix_length, answer_ids)
         alignment_loss = answer_loss.new_zeros(())
         if self.stage == Stage.ALIGNMENT:
@@ -139,6 +154,12 @@ class LatentReasoner(nn.Module):
             alignment_loss = F.mse_loss(predictions.float(), latents.float())
         loss = answer_loss + self.config.alignment_weight * alignment_loss
         return LossOutput(loss, answer_loss, alignment_loss, latents)
+
+    def _refinement_loss(self, prefix, answer_ids):
+        rollout = self.rollout(prefix)
+        hidden = self._decode_answer(rollout.full_sequence, answer_ids)
+        answer_loss = self._answer_loss(hidden, prefix.embeddings.shape[1], answer_ids)
+        return LossOutput(answer_loss, answer_loss, answer_loss.new_zeros(()), rollout.latents)
 
     @torch.no_grad()
     def generate(self, inputs, *, max_new_tokens=64, eos_token_ids=(), use_cache=True,
@@ -151,29 +172,35 @@ class LatentReasoner(nn.Module):
         try:
             prefix = self.prefix(inputs)
             if oracle_features is None:
-                sequence, latents, cache, offset = self.rollout(prefix, use_cache=use_cache)
-                sequence = sequence.append(self.backbone.token(self.end_id))
-                current = (Sequence(sequence.embeddings[:, -2:], sequence.positions[..., -2:])
-                           if use_cache else sequence)
+                rollout = self.rollout(prefix, use_cache=use_cache)
+                latents = rollout.latents
+                past_key_values = rollout.past_key_values
+                cached_token_count = rollout.cached_token_count
+                full_sequence = rollout.full_sequence.append(self.backbone.token(self.end_id))
+                # The cache ends before the final latent; consume it and the end boundary.
+                decoder_input = (Sequence(full_sequence.embeddings[:, -2:], full_sequence.positions[..., -2:])
+                                 if use_cache else full_sequence)
             else:
                 latents = self._targets(oracle_features)
-                sequence = prefix.append(latents).append(self.backbone.token(self.end_id))
-                current, cache, offset = sequence, None, 0
+                full_sequence = prefix.append(latents).append(self.backbone.token(self.end_id))
+                decoder_input = full_sequence
+                past_key_values, cached_token_count = None, 0
             tokens = []
             for _ in range(max_new_tokens):
-                output = self.backbone.decode(current, past_key_values=cache,
-                                              use_cache=use_cache, offset=offset)
+                output = self.backbone.decode(
+                    decoder_input, past_key_values=past_key_values,
+                    use_cache=use_cache, cached_token_count=cached_token_count)
                 token_id = int(self.backbone.logits(output.last_hidden_state[:, -1]).argmax(-1).item())
                 tokens.append(token_id)
                 if token_id in eos_token_ids:
                     break
-                sequence = sequence.append(self.backbone.token(token_id))
+                full_sequence = full_sequence.append(self.backbone.token(token_id))
                 if use_cache:
-                    cache = output.past_key_values
-                    offset += current.embeddings.shape[1]
-                    current = Sequence(sequence.embeddings[:, -1:], sequence.positions[..., -1:])
+                    past_key_values = output.past_key_values
+                    cached_token_count += decoder_input.embeddings.shape[1]
+                    decoder_input = Sequence(full_sequence.embeddings[:, -1:], full_sequence.positions[..., -1:])
                 else:
-                    current = sequence
+                    decoder_input = full_sequence
             return GenerationOutput(tokens, latents)
         finally:
             self.train(was_training)

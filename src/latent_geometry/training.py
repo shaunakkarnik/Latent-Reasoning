@@ -30,8 +30,6 @@ def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
     if stage == Stage.WARMUP and resume is None:
         mean, std = fit_statistics([r["teacher_feature"] for r in training])
         model.oracle.set_statistics(mean, std)
-    if stage == Stage.ALIGNMENT and not bool(model.oracle.stats_ready):
-        raise ValueError("Initialize alignment from a completed warmup checkpoint")
     if gradient_checkpointing:
         # Non-reentrant checkpointing supports gradients through recurrent inputs.
         model.backbone.model.gradient_checkpointing_enable(
@@ -53,6 +51,8 @@ def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
+    if stage == Stage.ALIGNMENT and not bool(model.oracle.stats_ready):
+        raise ValueError("Initialize alignment from a completed warmup checkpoint")
     if progress["step"] >= steps:
         raise ValueError("--steps is the total optimizer-step target; checkpoint already reached it")
     output_dir = Path(output_dir)
