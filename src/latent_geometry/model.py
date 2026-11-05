@@ -74,6 +74,8 @@ class LatentReasoner(nn.Module):
         self.set_stage(Stage.WARMUP)
 
     def set_stage(self, stage):
+        if Stage(stage) == Stage.SFT:
+            raise ValueError("Use AnswerOnlyReasoner for sft")
         self.stage = Stage(stage)
         self.backbone.requires_grad_(True)
         self.backbone.model.model.visual.requires_grad_(False)

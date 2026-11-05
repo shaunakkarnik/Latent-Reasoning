@@ -13,3 +13,5 @@ Training has three stages:
 At inference, the student generates and consumes its own latent vectors before answering, without running VGGT.
 
 See [USAGE.md](USAGE.md) for setup, training, and evaluation instructions.
+See [SPATIALLADDER.md](SPATIALLADDER.md) for server-side dataset preparation and
+the SpatialLadder / SPBench-SI comparison workflow.

@@ -1,4 +1,4 @@
-"""Full checkpoints: student, heads, normalization, processor, optimizer, and RNG."""
+"""Student checkpoints, optionally including optimizer state for exact resumption."""
 import json
 from pathlib import Path
 import random
@@ -33,6 +33,8 @@ def save_checkpoint(path, model, *, processor=None, optimizer=None, progress=Non
     try:
         model.config.save(temporary / "latent_config.json")
         metadata = {"format_version": 1, "stage": model.stage.value,
+                    "checkpoint_type": "full" if optimizer is not None else "weights_only",
+                    "model_kind": "answer_only" if model.stage.value == "sft" else "latent",
                     "start_id": model.start_id, "end_id": model.end_id,
                     "transformers": "4.57.1", "torch": str(torch.__version__)}
         (temporary / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -55,12 +57,13 @@ def restore_checkpoint(path, model, *, optimizer=None, restore_random=False):
     if (metadata["start_id"], metadata["end_id"]) != (model.start_id, model.end_id):
         raise ValueError("Checkpoint latent boundary token IDs do not match tokenizer")
     state = torch.load(path / "state.pt", map_location="cpu", weights_only=True)
-    model.load_state_dict(state["model"], strict=True)
     if optimizer is not None:
         if state["optimizer"] is None:
-            raise ValueError("Checkpoint has no optimizer state")
+            raise ValueError("Checkpoint has no optimizer state; use --init-from instead of --resume")
         if metadata["stage"] != model.stage.value:
             raise ValueError("Resume must use the checkpoint stage; use --init-from for a new stage")
+    model.load_state_dict(state["model"], strict=True)
+    if optimizer is not None:
         optimizer.load_state_dict(state["optimizer"])
     if restore_random:
         restore_rng(state["rng"])

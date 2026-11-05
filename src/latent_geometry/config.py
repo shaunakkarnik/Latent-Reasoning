@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 class Stage(str, Enum):
+    SFT = "sft"
     WARMUP = "warmup"
     ALIGNMENT = "alignment"
     REFINEMENT = "refinement"

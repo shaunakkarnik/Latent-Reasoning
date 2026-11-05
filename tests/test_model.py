@@ -15,7 +15,7 @@ def test_backbone_preserves_native_qwen_image_embeddings_and_positions(model, ex
     torch.testing.assert_close(native, adapted, rtol=1e-5, atol=1e-6)
 
 
-@pytest.mark.parametrize("stage", list(Stage))
+@pytest.mark.parametrize("stage", [Stage.WARMUP, Stage.ALIGNMENT, Stage.REFINEMENT])
 def test_stage_gradients_and_parameter_updates(model, example, stage):
     model.set_stage(stage)
     parameters = dict(model.named_parameters())

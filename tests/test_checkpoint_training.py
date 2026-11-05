@@ -88,3 +88,67 @@ def test_training_runner_resume_matches_uninterrupted(tmp_path, example, monkeyp
     metrics = [json.loads(line) for line in (tmp_path / "resumed" / "metrics.jsonl").read_text().splitlines()]
     assert [m["step"] for m in metrics] == [2, 3]
     assert metrics[-1]["examples_seen"] == 6
+
+
+def test_compact_checkpoints_recover_then_finish_weights_only(tmp_path, example):
+    class InterruptedEncoder(FixtureEncoder):
+        calls = 0
+
+        def __call__(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 3:
+                raise RuntimeError("Simulated interruption")
+            return super().__call__(*args, **kwargs)
+
+    records = [{"id": "fixture", "scene_id": "scene", "split": "train", "question": "Q", "answer": "A"}]
+    kwargs = dict(processor=None, records=records, stage=Stage.REFINEMENT, steps=3,
+                  checkpoint_every=1, learning_rate=1e-3, gradient_checkpointing=False,
+                  bf16=False, compact_checkpoints=True)
+    torch.manual_seed(42)
+    continuous = tiny_model()
+    initial = {key: value.clone() for key, value in continuous.state_dict().items()}
+    train(continuous, encoder=FixtureEncoder(example), output_dir=tmp_path / "continuous", **kwargs)
+    interrupted = tiny_model()
+    interrupted.load_state_dict(initial)
+    output = tmp_path / "interrupted"
+    with pytest.raises(RuntimeError, match="Simulated interruption"):
+        train(interrupted, encoder=InterruptedEncoder(example), output_dir=output, **kwargs)
+    recovery = output / "checkpoint-000002"
+    assert list(output.glob("checkpoint-*")) == [recovery]
+    assert torch.load(recovery / "state.pt", weights_only=True)["optimizer"] is not None
+    full_size = (recovery / "state.pt").stat().st_size
+
+    # Branching a resume must not remove the source directory's recovery checkpoint.
+    branched = tiny_model()
+    train(branched, encoder=FixtureEncoder(example), output_dir=tmp_path / "branched", resume=recovery, **kwargs)
+    assert recovery.exists()
+    train(interrupted, encoder=FixtureEncoder(example), output_dir=output, resume=recovery, **kwargs)
+    final = output / "checkpoint-000003"
+    assert list(output.glob("checkpoint-*")) == [final]
+    assert json.loads((final / "metadata.json").read_text())["checkpoint_type"] == "weights_only"
+    assert torch.load(final / "state.pt", weights_only=True)["optimizer"] is None
+    assert (final / "state.pt").stat().st_size < full_size
+    for a, b in zip(continuous.parameters(), interrupted.parameters()):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+    reloaded = tiny_model()
+    restore_checkpoint(final, reloaded)
+    for key, value in interrupted.state_dict().items():
+        torch.testing.assert_close(value, reloaded.state_dict()[key], rtol=0, atol=0)
+    optimizer = torch.optim.AdamW(reloaded.parameters())
+    with pytest.raises(ValueError, match="--init-from instead of --resume"):
+        restore_checkpoint(final, reloaded, optimizer=optimizer)
+
+
+def test_compact_checkpoint_save_failure_keeps_recovery(tmp_path, example, monkeypatch):
+    def fail_second_save(path, *args, **kwargs):
+        if path.name == "checkpoint-000002":
+            raise OSError("Simulated disk error")
+        save_checkpoint(path, *args, **kwargs)
+
+    monkeypatch.setattr("latent_geometry.training.save_checkpoint", fail_second_save)
+    records = [{"id": "fixture", "scene_id": "scene", "split": "train", "question": "Q", "answer": "A"}]
+    with pytest.raises(OSError, match="Simulated disk error"):
+        train(tiny_model(), None, FixtureEncoder(example), records, output_dir=tmp_path,
+              stage=Stage.REFINEMENT, steps=3, checkpoint_every=1,
+              gradient_checkpointing=False, bf16=False, compact_checkpoints=True)
+    assert (tmp_path / "checkpoint-000001/state.pt").exists()

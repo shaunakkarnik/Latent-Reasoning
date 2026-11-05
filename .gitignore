@@ -226,3 +226,6 @@ feature_cache/
 checkpoints/
 *.pt
 *.safetensors
+
+# Local ICE cluster notes, environments, and submission scripts
+.local-ice/

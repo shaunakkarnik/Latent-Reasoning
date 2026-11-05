@@ -100,7 +100,7 @@ class QwenBackbone(nn.Module):
         return self.model.lm_head(hidden)
 
 
-def load_student(config, *, dtype=torch.bfloat16, device="cpu", processor_path=None):
+def load_student(config, *, dtype=torch.bfloat16, device="cpu", processor_path=None, add_latent_tokens=True):
     import transformers
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
@@ -119,12 +119,13 @@ def load_student(config, *, dtype=torch.bfloat16, device="cpu", processor_path=N
     resolved = getattr(model.config, "_commit_hash", None)
     if resolved:
         config.student_revision = resolved
-    processor.tokenizer.add_special_tokens(
-        {"additional_special_tokens": [config.start_token, config.end_token]},
-        replace_additional_special_tokens=False,
-    )
-    model.resize_token_embeddings(len(processor.tokenizer))
+    if add_latent_tokens:
+        processor.tokenizer.add_special_tokens(
+            {"additional_special_tokens": [config.start_token, config.end_token]},
+            replace_additional_special_tokens=False,
+        )
+        model.resize_token_embeddings(len(processor.tokenizer))
     model.to(device)
-    start_id = processor.tokenizer.convert_tokens_to_ids(config.start_token)
-    end_id = processor.tokenizer.convert_tokens_to_ids(config.end_token)
+    start_id = processor.tokenizer.convert_tokens_to_ids(config.start_token) if add_latent_tokens else None
+    end_id = processor.tokenizer.convert_tokens_to_ids(config.end_token) if add_latent_tokens else None
     return QwenBackbone(model), processor, start_id, end_id

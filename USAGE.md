@@ -2,6 +2,9 @@
 
 For the goal, method, and experiment sequence, see [RESEARCH_GOAL.md](RESEARCH_GOAL.md).
 
+For server-side downloads, scene splitting, the answer-only baseline, and
+SPBench-SI scoring, start with [SPATIALLADDER.md](SPATIALLADDER.md).
+
 ## Install and verify without model downloads
 
 Use Python 3.10+ and a suitable PyTorch installation for your machine:
@@ -120,6 +123,16 @@ assuming the 3B configuration fits. There is no measured GPU memory guarantee.
 Checkpoints contain the complete student (including frozen vision), adapter,
 prediction head, statistics, processor, optimizer, RNG, example cursor, and run
 settings. They can be large. New stages use `--init-from` and a fresh optimizer.
+Add `--compact-checkpoints` to keep only the latest full recovery checkpoint
+while training and save a weights-only final checkpoint. A replacement is saved
+successfully before the previous checkpoint is deleted. The final checkpoint
+retains the student, heads, normalization, processor, and run metadata, but omits
+optimizer state. Use it for evaluation or `--init-from`; `--resume` requires an
+intermediate full checkpoint. When resuming into a different output directory,
+the original checkpoint is preserved. Checkpoint publication temporarily needs
+space for both the old and new files. Without this flag, all saves remain full
+checkpoints and are retained, as before.
+
 To resume the same stage:
 
 ```bash
@@ -156,6 +169,7 @@ latent-geometry evaluate \
 
 Generation needs only the student checkpoint, image, and question. Evaluation
 writes predictions, latent norms, latency, and per-scene normalized exact match.
-Exact match is a plumbing metric; add the selected dataset's scoring rules before
-making performance claims. Geometry probes, crop/answer-only baselines, controlled
-interventions, confidence intervals, and large research runs remain later work.
+SpatialLadder manifests additionally enable SPBench scoring as documented in
+[SPATIALLADDER.md](SPATIALLADDER.md). Custom manifests without `scoring` use
+normalized exact match. Geometry probes, controlled interventions, confidence
+intervals, and large research runs remain later work.

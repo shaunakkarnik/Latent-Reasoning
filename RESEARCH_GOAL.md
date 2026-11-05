@@ -17,3 +17,16 @@ Use Qwen2.5-VL-3B-Instruct with a trainable language model and frozen vision enc
 3. **Refinement:** use generated recurrent latents and answer loss alone, with gradients through all latent steps.
 
 At inference, the student generates and consumes 16 latent vectors, then answers without VGGT.
+
+## Data and evaluation
+
+Train on the single-image spatial reasoning subset of SpatialLadder-26k. Hold out
+training rooms for validation, grouping all ScanNet rescans of each room together.
+Use SPBench-SI as the held-out, in-domain test benchmark, with multiple-choice
+accuracy and numerical mean relative accuracy, reported by task and as a task
+macro average.
+
+Compare against the original Qwen2.5-VL-3B-Instruct model and an answer-only
+fine-tuned version trained on the same training split without latent vectors.
+Keep the vision encoder/merger frozen for both fine-tuned methods. Use identical
+direct-answer question prompts and image preprocessing across comparisons.

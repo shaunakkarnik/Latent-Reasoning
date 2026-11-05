@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import random
+import shutil
 import time
 
 import torch
@@ -15,7 +16,8 @@ from .geometry import fit_statistics
 
 def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
           learning_rate=1e-5, accumulation_steps=1, seed=42, checkpoint_every=100,
-          resume=None, gradient_checkpointing=True, bf16=True, max_grad_norm=1.0):
+          resume=None, gradient_checkpointing=True, bf16=True, max_grad_norm=1.0,
+          compact_checkpoints=False):
     if min(steps, accumulation_steps, checkpoint_every) < 1 or learning_rate <= 0 or max_grad_norm <= 0:
         raise ValueError("Steps, accumulation, checkpoint interval, LR and max_grad_norm must be positive")
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
@@ -25,7 +27,8 @@ def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
     if not training:
         raise ValueError("Manifest has no training split")
     fingerprint = manifest_fingerprint(records)
-    policy = validate_feature_policy(records, model.config) if stage != Stage.REFINEMENT else None
+    needs_features = stage in (Stage.WARMUP, Stage.ALIGNMENT)
+    policy = validate_feature_policy(records, model.config) if needs_features else None
     model.set_stage(stage)
     if stage == Stage.WARMUP and resume is None:
         mean, std = fit_statistics([r["teacher_feature"] for r in training])
@@ -64,7 +67,14 @@ def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
         if logged_steps and max(logged_steps) > progress["step"]:
             raise ValueError("Output has steps beyond this checkpoint; resume into a new output directory")
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "run.json").write_text(json.dumps(settings, indent=2) + "\n")
+    (output_dir / "run.json").write_text(json.dumps({**settings,
+        "compact_checkpoints": compact_checkpoints}, indent=2) + "\n")
+    previous_checkpoint = None
+    if compact_checkpoints and resume:
+        resumed_path = Path(resume).resolve()
+        # Never delete a source checkpoint when resuming into a different directory.
+        if resumed_path.parent == output_dir.resolve():
+            previous_checkpoint = resumed_path
     use_amp = bf16 and model.backbone.device.type == "cuda"
     model.train()
     order, order_epoch = [], -1
@@ -78,7 +88,7 @@ def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
                 order = list(range(len(training)))
                 random.Random(seed + epoch).shuffle(order)
                 order_epoch = epoch
-            example = encoder(training[order[index]], require_features=stage != Stage.REFINEMENT)
+            example = encoder(training[order[index]], require_features=needs_features)
             context = torch.autocast("cuda", dtype=torch.bfloat16) if use_amp else nullcontext()
             with context:
                 result = model(**example)
@@ -87,7 +97,8 @@ def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
             (result.loss / accumulation_steps).backward()
             for name in ("loss", "answer_loss", "alignment_loss"):
                 totals[name] += float(getattr(result, name).detach()) / accumulation_steps
-            totals["latent_rms"] += float(result.latents.detach().float().square().mean().sqrt()) / accumulation_steps
+            if result.latents.numel():
+                totals["latent_rms"] += float(result.latents.detach().float().square().mean().sqrt()) / accumulation_steps
             progress["examples_seen"] += 1
         norm = torch.nn.utils.clip_grad_norm_(parameters, max_grad_norm, error_if_nonfinite=True)
         optimizer.step()
@@ -100,6 +111,13 @@ def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
         with (output_dir / "metrics.jsonl").open("a") as stream:
             stream.write(json.dumps(metrics) + "\n")
         if (step + 1) % checkpoint_every == 0 or step + 1 == steps:
-            save_checkpoint(output_dir / f"checkpoint-{step + 1:06d}", model,
-                            processor=processor, optimizer=optimizer, progress=progress)
+            checkpoint = output_dir / f"checkpoint-{step + 1:06d}"
+            final_weights_only = compact_checkpoints and step + 1 == steps
+            save_checkpoint(checkpoint, model, processor=processor,
+                            optimizer=None if final_weights_only else optimizer, progress=progress)
+            if compact_checkpoints:
+                # Publish the replacement atomically before removing our previous save.
+                if previous_checkpoint is not None:
+                    shutil.rmtree(previous_checkpoint)
+                previous_checkpoint = checkpoint
     return progress

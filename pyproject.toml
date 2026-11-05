@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["torch>=2.6,<3", "transformers==4.57.1", "Pillow>=10", "numpy>=1.26,<3"]
 
 [project.optional-dependencies]
+data = ["huggingface-hub>=0.34,<1", "pyarrow>=16"]
 test = ["pytest>=8,<9"]
 teacher = ["vggt @ git+https://github.com/facebookresearch/vggt.git@a288dd0f14786c93483e45524328726ab7b1b4ce", "torchvision>=0.21,<1"]
 
