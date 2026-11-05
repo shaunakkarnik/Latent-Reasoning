@@ -62,12 +62,23 @@ STAGE_STEPS=100 ACCUMULATION_STEPS=8 bash scripts/train_spatialladder.sh
 ```
 
 This is an initial pipeline check, **not a tuned schedule**. Each latent stage
-defaults to 100 optimizer steps; SFT defaults to 300, matching the total training
-examples consumed across the three latent stages. This matches data exposure,
-not compute. One pass over the default training split takes `ceil(5252 / 8) = 657`
-optimizer steps. Adjust `STAGE_STEPS`, `SFT_STEPS`, `LEARNING_RATE`,
-`ACCUMULATION_STEPS`, `SEED`, `CONFIG`, `MANIFEST`, `RUN_DIR`, or `DEVICE` through
-environment variables. Use a new `RUN_DIR` for each fresh experiment. The script
+defaults to 100 optimizer steps; SFT defaults to 300. Both launch scripts select
+one shared, seeded subset of 800 training questions: each latent stage sees it
+once, and SFT sees it three times. Validation/test are not subsampled. Warmup
+normalization uses only images from the selected training subset. This matches
+distinct questions and total presentations, not compute. Selected question IDs
+are saved in each run and checkpoint.
+
+`MAX_TRAIN_EXAMPLES` defaults to `STAGE_STEPS * ACCUMULATION_STEPS`; set it to
+`0` to use the whole training split. For an exact full-data comparison with the
+default 5,252 training questions, use `MAX_TRAIN_EXAMPLES=0 ACCUMULATION_STEPS=4
+STAGE_STEPS=1313` (SFT then defaults to 3,939 steps). With accumulation 8, 657
+steps cross the epoch boundary by four examples. Adjust `STAGE_STEPS`,
+`SFT_STEPS`, `MAX_TRAIN_EXAMPLES`, `LEARNING_RATE`, `ACCUMULATION_STEPS`, `SEED`,
+`CONFIG`, `MANIFEST`, `RUN_DIR`, or `DEVICE` through environment variables.
+If overriding the schedule, keep `STAGE_STEPS * ACCUMULATION_STEPS` equal to the
+selected subset size and `SFT_STEPS` equal to three times `STAGE_STEPS` for the
+one-pass/three-pass comparison. Use a new `RUN_DIR` for each fresh experiment. The script
 runs sequentially. Both the script and ICE job files enable compact checkpoints:
 every 25 steps, save a full recovery checkpoint and remove the preceding save
 only after its replacement succeeds. At stage completion, keep only final weights
@@ -83,7 +94,7 @@ To train only the answer-only baseline, without VGGT installation or extraction:
 pip install -e '.[data]'
 latent-geometry train --stage sft --config configs/default.json \
   --manifest data/spatialladder/spatial.jsonl --output-dir runs/sft \
-  --steps 300 --accumulation-steps 8 --learning-rate 1e-5 \
+  --steps 300 --accumulation-steps 8 --max-train-examples 800 --learning-rate 1e-5 \
   --checkpoint-every 25 --compact-checkpoints --device cuda
 ```
 
@@ -112,7 +123,10 @@ latent-geometry evaluate --checkpoint runs/spatialladder/refinement/checkpoint-0
   --output runs/spatialladder/eval/latent-test.jsonl --device cuda
 ```
 
-Each evaluation writes predictions and a `.jsonl.summary.json` sidecar. On these
+Each evaluation writes predictions and a `.jsonl.summary.json` sidecar. The
+sidecar identifies the model as `original`, `sft`, or `latent` and records the
+absolute checkpoint path, training stage/step, and a fingerprint of the evaluated
+questions and image content (excluding optional teacher-cache paths). On these
 manifests, `overall_score` is the unweighted mean of the four task scores;
 `mcq_accuracy`, `numerical_mra`, and `by_question_type` give the breakdown. All
 scores are fractions in [0, 1]. The evaluator follows the official direct-answer

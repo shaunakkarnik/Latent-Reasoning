@@ -8,6 +8,7 @@ CONFIG=${CONFIG:-configs/default.json}
 STAGE_STEPS=${STAGE_STEPS:-100}
 SFT_STEPS=${SFT_STEPS:-$((3 * STAGE_STEPS))}
 ACCUMULATION_STEPS=${ACCUMULATION_STEPS:-8}
+MAX_TRAIN_EXAMPLES=${MAX_TRAIN_EXAMPLES:-$((STAGE_STEPS * ACCUMULATION_STEPS))}
 LEARNING_RATE=${LEARNING_RATE:-1e-5}
 DEVICE=${DEVICE:-cuda}
 SEED=${SEED:-42}
@@ -15,11 +16,12 @@ CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-25}
 
 common=(--manifest "$MANIFEST" --learning-rate "$LEARNING_RATE"
         --accumulation-steps "$ACCUMULATION_STEPS" --device "$DEVICE" --seed "$SEED"
-        --checkpoint-every "$CHECKPOINT_EVERY" --compact-checkpoints)
+        --checkpoint-every "$CHECKPOINT_EVERY" --compact-checkpoints
+        --max-train-examples "$MAX_TRAIN_EXAMPLES")
 printf -v stage_checkpoint 'checkpoint-%06d' "$STAGE_STEPS"
 printf -v sft_checkpoint 'checkpoint-%06d' "$SFT_STEPS"
 
-# Match the total number of training examples seen across all three latent stages.
+# Use one shared subset: one pass per latent stage, three passes for SFT by default.
 latent-geometry train "${common[@]}" --config "$CONFIG" --stage sft \
   --steps "$SFT_STEPS" --output-dir "$RUN_DIR/sft"
 latent-geometry train "${common[@]}" --config "$CONFIG" --stage warmup \

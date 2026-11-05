@@ -36,11 +36,18 @@ def load_run(checkpoint=None, config_path=None, *, device="cpu", load_weights=Tr
         config, dtype=dtype, device=device, processor_path=processor_path, **options)
     model = (AnswerOnlyReasoner(backbone, config) if answer_only
              else LatentReasoner(backbone, config, start_id, end_id))
+    model.evaluation_source = {"model_kind": "original" if answer_only else "latent",
+                               "checkpoint_path": None, "stage": None, "training_step": None}
     if checkpoint:
         metadata = json.loads((Path(checkpoint) / "metadata.json").read_text())
         model.set_stage(metadata["stage"])
         if load_weights:
-            restore_checkpoint(checkpoint, model)
+            progress = restore_checkpoint(checkpoint, model)
+            model.evaluation_source = {
+                "model_kind": "sft" if answer_only else "latent",
+                "checkpoint_path": str(Path(checkpoint).resolve()),
+                "stage": metadata["stage"], "training_step": progress.get("step"),
+            }
     return model, processor, ExampleEncoder(processor, config)
 
 
@@ -77,6 +84,8 @@ def main(argv=None):
     training.add_argument("--compact-checkpoints", action="store_true",
                           help="Keep the latest full recovery checkpoint; finish with weights only")
     training.add_argument("--seed", type=int, default=42)
+    training.add_argument("--max-train-examples", type=int, default=0,
+                          help="Fixed seeded training subset shared across stages; 0 uses all examples")
     training.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     training.add_argument("--bf16", action=argparse.BooleanOptionalAction, default=True)
     training.add_argument("--max-prompt-tokens", type=int, default=4096)
@@ -154,7 +163,7 @@ def main(argv=None):
               accumulation_steps=args.accumulation_steps, seed=args.seed,
               checkpoint_every=args.checkpoint_every, resume=args.resume,
               gradient_checkpointing=args.gradient_checkpointing, bf16=args.bf16,
-              compact_checkpoints=args.compact_checkpoints)
+              compact_checkpoints=args.compact_checkpoints, max_train_examples=args.max_train_examples)
         return
     if args.command == "evaluate":
         if args.original_model and args.oracle:

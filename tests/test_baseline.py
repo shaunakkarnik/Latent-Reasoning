@@ -48,6 +48,10 @@ def test_baseline_training_checkpoint_resume(tmp_path, monkeypatch):
     monkeypatch.setattr("latent_geometry.cli.load_student", load_baseline)
     restored, _, _ = load_run(checkpoint)
     assert isinstance(restored, AnswerOnlyReasoner)
+    assert restored.evaluation_source == {
+        "model_kind": "sft", "checkpoint_path": str(checkpoint.resolve()),
+        "stage": "sft", "training_step": 1,
+    }
     for a, b in zip(model.parameters(), restored.parameters()):
         torch.testing.assert_close(a, b)
     progress = train(restored, output_dir=tmp_path / "resumed", steps=2, resume=checkpoint, **kwargs)

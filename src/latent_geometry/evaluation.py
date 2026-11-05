@@ -6,6 +6,7 @@ from contextlib import nullcontext
 import torch
 
 from .geometry import load_feature
+from .data import manifest_fingerprint
 from .scoring import score_spbench, summarize_spbench
 
 
@@ -18,6 +19,9 @@ def evaluate(model, processor, encoder, records, *, output_path, split="val", or
     records = [r for r in records if r["split"] == split]
     if not records:
         raise ValueError(f"No examples in split {split}")
+    # Identify evaluated questions/images independently of optional teacher caches.
+    fingerprint = manifest_fingerprint([{k: v for k, v in r.items() if k != "teacher_feature"}
+                                        for r in records])
     eos = processor.tokenizer.convert_tokens_to_ids("<|im_end|>")
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +65,9 @@ def evaluate(model, processor, encoder, records, *, output_path, split="val", or
     summary = {"count": len(records), "exact_match": correct / len(records), "by_scene": by_scene,
                "oracle": oracle, "split": split,
                "scoring": protocol,
-               "model_kind": "answer_only" if model.stage.value == "sft" else "latent",
+               "model_kind": "sft" if model.stage.value == "sft" else "latent",
+               **getattr(model, "evaluation_source", {}),
+               "evaluation_manifest_fingerprint": fingerprint,
                "student": model.config.student, "student_revision": model.config.student_revision,
                "max_new_tokens": max_new_tokens, "bf16": bf16}
     if protocol == "spbench-si":

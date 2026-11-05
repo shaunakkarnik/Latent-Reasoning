@@ -38,6 +38,8 @@ The encoder applies Qwen's chat template to the source image and question, then
 tokenizes the answer separately with an assistant terminator. It rejects long
 examples rather than truncating image placeholders or answers. The current
 runner uses **one unpadded example per forward** and gradient accumulation.
+Latent-end is a fixed input boundary: answer loss supervises only answer tokens
+and the generated assistant terminator, not the latent-end token.
 
 ## Extract teacher features offline
 
@@ -72,7 +74,7 @@ The enriched manifest retains scene and example identifiers and adds
 `teacher_feature`. Its resolved file paths are absolute; adjust them if moving
 the data between machines. Training rejects mixed teacher extraction policies.
 
-Warmup fits feature-channel mean/std from **unique training feature files only**.
+Warmup fits feature-channel mean/std from **unique feature files in the selected training subset only**.
 Normalization and the linear adapter are stored in the student checkpoint.
 The initial adapter/head output scale is matched approximately to input-embedding
 RMS; monitor `latent_rms` during training. An adapter trained on answer loss is
@@ -89,22 +91,32 @@ latent-geometry train \
   --config configs/default.json \
   --manifest data/spatial-with-features.jsonl \
   --stage warmup --output-dir runs/warmup \
-  --steps 100 --learning-rate 1e-5 --accumulation-steps 8 --device cuda
+  --steps 100 --learning-rate 1e-5 --accumulation-steps 8 \
+  --max-train-examples 800 --device cuda
 
 # Stage 2: freeze the oracle adapter and learn to predict its targets.
 latent-geometry train \
   --init-from runs/warmup/checkpoint-000100 \
   --manifest data/spatial-with-features.jsonl \
   --stage alignment --output-dir runs/alignment \
-  --steps 100 --learning-rate 1e-5 --accumulation-steps 8 --device cuda
+  --steps 100 --learning-rate 1e-5 --accumulation-steps 8 \
+  --max-train-examples 800 --device cuda
 
 # Stage 3: answer with self-generated latents and backpropagate through them.
 latent-geometry train \
   --init-from runs/alignment/checkpoint-000100 \
   --manifest data/spatial-with-features.jsonl \
   --stage refinement --output-dir runs/refinement \
-  --steps 100 --learning-rate 1e-5 --accumulation-steps 8 --device cuda
+  --steps 100 --learning-rate 1e-5 --accumulation-steps 8 \
+  --max-train-examples 800 --device cuda
 ```
+
+`--max-train-examples 800` selects a fixed, seeded subset shared across stages
+and the SFT baseline, regardless of teacher-feature fields. The default CLI value
+`0` uses all training examples. Validation/test remain unchanged. The examples
+above make one pass over the 800-question subset per latent stage; compare with
+300 SFT steps on the same subset. The runner records selected IDs in `run.json`
+and checkpoint settings.
 
 VGGT is not run during any student-training stage. Refinement also accepts a
 manifest with no `teacher_feature` fields. Set feature dimensions, pool size, and
@@ -140,12 +152,16 @@ latent-geometry train \
   --resume runs/alignment/checkpoint-000100 \
   --manifest data/spatial-with-features.jsonl \
   --stage alignment --output-dir runs/alignment \
-  --steps 200 --learning-rate 1e-5 --accumulation-steps 8 --device cuda
+  --steps 200 --learning-rate 1e-5 --accumulation-steps 8 \
+  --max-train-examples 800 --device cuda
 ```
 
 `--steps` is the total optimizer-step target. Resume restores the optimizer,
 RNG, and deterministic example order and rejects changes to data or recorded
-training settings. Checkpoints are saved only after complete optimizer steps.
+training settings, including the training subset and answer-loss targets.
+Checkpoints from the previous latent-end-supervised objective cannot be resumed
+exactly with this version; use a fresh run for the revised experiment. Checkpoints
+are saved only after complete optimizer steps.
 If logs extend beyond the resumed checkpoint, choose a new output directory.
 
 ## Generate and evaluate

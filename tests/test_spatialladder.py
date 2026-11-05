@@ -105,6 +105,8 @@ def test_evaluate_writes_spbench_summary(tmp_path):
 
     model = SimpleNamespace(backbone=SimpleNamespace(device=torch.device("cpu")),
         config=LatentConfig(), stage=Stage.SFT,
+        evaluation_source={"model_kind": "original", "checkpoint_path": None,
+                           "stage": None, "training_step": None},
         generate=lambda *args, **kwargs: SimpleNamespace(token_ids=[1], latents=torch.empty(1, 0, 8)))
     tokenizer = SimpleNamespace(convert_tokens_to_ids=lambda token: 2,
                                 decode=lambda *args, **kwargs: "100")
@@ -114,5 +116,9 @@ def test_evaluate_writes_spbench_summary(tmp_path):
     output = tmp_path / "predictions.jsonl"
     summary = evaluate(model, SimpleNamespace(tokenizer=tokenizer), encoder, [record], output_path=output)
     assert summary["overall_score"] == 1
+    assert summary["model_kind"] == "original"
+    assert summary["checkpoint_path"] is None
+    from latent_geometry.data import manifest_fingerprint
+    assert summary["evaluation_manifest_fingerprint"] == manifest_fingerprint([record])
     assert json.loads(output.read_text())["latent_rms"] == 0
     assert output.with_suffix(".jsonl.summary.json").is_file()

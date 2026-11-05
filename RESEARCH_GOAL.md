@@ -17,6 +17,8 @@ Use Qwen2.5-VL-3B-Instruct with a trainable language model and frozen vision enc
 3. **Refinement:** use generated recurrent latents and answer loss alone, with gradients through all latent steps.
 
 At inference, the student generates and consumes 16 latent vectors, then answers without VGGT.
+The fixed latent-end boundary is supplied as input, not supervised as a prediction.
+Answer loss covers the answer tokens and the generated assistant terminator.
 
 ## Data and evaluation
 
@@ -30,3 +32,6 @@ Compare against the original Qwen2.5-VL-3B-Instruct model and an answer-only
 fine-tuned version trained on the same training split without latent vectors.
 Keep the vision encoder/merger frozen for both fine-tuned methods. Use identical
 direct-answer question prompts and image preprocessing across comparisons.
+Match distinct training questions and total example presentations: each latent
+stage makes one pass over the chosen training set, and SFT makes three passes.
+Pilot runs use one shared, seeded subset; full runs use the entire training split.

@@ -14,16 +14,28 @@ from .data import manifest_fingerprint, validate_feature_policy
 from .geometry import fit_statistics
 
 
+def select_training_records(records, max_train_examples=0, seed=42):
+    """Select the same fixed subset across stages and feature-enriched manifests."""
+    if max_train_examples < 0:
+        raise ValueError("max_train_examples must be nonnegative (0 uses all training examples)")
+    training = [r for r in records if r["split"] == "train"]
+    if max_train_examples and max_train_examples < len(training):
+        training = sorted(training, key=lambda r: r["id"])
+        random.Random(seed).shuffle(training)
+        training = training[:max_train_examples]
+    return training
+
+
 def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
           learning_rate=1e-5, accumulation_steps=1, seed=42, checkpoint_every=100,
           resume=None, gradient_checkpointing=True, bf16=True, max_grad_norm=1.0,
-          compact_checkpoints=False):
+          compact_checkpoints=False, max_train_examples=0):
     if min(steps, accumulation_steps, checkpoint_every) < 1 or learning_rate <= 0 or max_grad_norm <= 0:
         raise ValueError("Steps, accumulation, checkpoint interval, LR and max_grad_norm must be positive")
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         raise ValueError("This initial runner is single-process; distributed sharding is not implemented")
     stage = Stage(stage)
-    training = [r for r in records if r["split"] == "train"]
+    training = select_training_records(records, max_train_examples, seed)
     if not training:
         raise ValueError("Manifest has no training split")
     fingerprint = manifest_fingerprint(records)
@@ -40,6 +52,9 @@ def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
     parameters = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(parameters, lr=learning_rate, weight_decay=0.0)
     settings = {"stage": stage.value, "manifest_fingerprint": fingerprint, "seed": seed,
+                "max_train_examples": max_train_examples,
+                "training_example_ids": [r["id"] for r in training],
+                "answer_loss_targets": "answer_and_assistant_terminator",
                 "accumulation_steps": accumulation_steps, "learning_rate": learning_rate,
                 "gradient_checkpointing": gradient_checkpointing, "bf16": bf16,
                 "max_grad_norm": max_grad_norm, "teacher_policy": policy,

@@ -51,6 +51,42 @@ class FixtureEncoder:
         return {**self.example, "teacher_features": None}
 
 
+def test_shared_subset_matches_sft_and_latent_exposure(tmp_path, example):
+    from collections import Counter
+    from latent_geometry.baseline import AnswerOnlyReasoner
+    from latent_geometry.training import select_training_records
+
+    records = [{"id": str(i), "split": "train"} for i in range(10)]
+    records.append({"id": "held-out", "split": "val"})
+    enriched = [{**r, "teacher_feature": "unused"} for r in reversed(records)]
+    selected = select_training_records(records, 4, seed=42)
+    assert [r["id"] for r in selected] == [
+        r["id"] for r in select_training_records(enriched, 4, seed=42)]
+
+    class RecordingEncoder(FixtureEncoder):
+        def __init__(self):
+            super().__init__(example)
+            self.seen = []
+
+        def __call__(self, record, **kwargs):
+            self.seen.append(record["id"])
+            return super().__call__(record, **kwargs)
+
+    latent = tiny_model()
+    baseline_backbone = tiny_model()
+    baseline = AnswerOnlyReasoner(baseline_backbone.backbone, baseline_backbone.config)
+    counts = []
+    for model, stage, steps in ((latent, Stage.REFINEMENT, 2), (baseline, Stage.SFT, 6)):
+        encoder = RecordingEncoder()
+        progress = train(model, None, encoder, records, output_dir=tmp_path / stage.value,
+                         stage=stage, steps=steps, accumulation_steps=2, max_train_examples=4,
+                         gradient_checkpointing=False, bf16=False)
+        assert progress["settings"]["training_example_ids"] == [r["id"] for r in selected]
+        counts.append(Counter(encoder.seen))
+    assert len(counts[0]) == 4
+    assert counts[1] == Counter({key: value * 3 for key, value in counts[0].items()})
+
+
 def test_training_runner_resume_matches_uninterrupted(tmp_path, example, monkeypatch):
     # Exercise real training-loop bookkeeping without downloading a tokenizer.
     records = [{"id": "fixture", "scene_id": "scene", "split": "train", "question": "Q", "answer": "A"}]

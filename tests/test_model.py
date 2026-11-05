@@ -77,10 +77,10 @@ def test_answer_loss_masks_prompt_and_latent_slots(model, example):
     seq = prefix.append(model._targets(example["teacher_features"])).append(
         model.backbone.token(model.end_id)).append(model.backbone.embed(example["answer_ids"]))
     hidden = model.backbone.decode(seq).last_hidden_state
-    # Exactly end-boundary + three answer labels, and only their predecessor states.
-    first = prefix.embeddings.shape[1] + model.config.num_latents - 1
-    labels = torch.tensor([model.end_id, 7, 8, 2])
-    expected = F.cross_entropy(model.backbone.logits(hidden[:, first:first + 4]).float().reshape(4, -1), labels)
+    # Only answer labels (including im_end), predicted starting from latent_end.
+    first = prefix.embeddings.shape[1] + model.config.num_latents
+    labels = torch.tensor([7, 8, 2])
+    expected = F.cross_entropy(model.backbone.logits(hidden[:, first:first + 3]).float().reshape(3, -1), labels)
     torch.testing.assert_close(output.answer_loss, expected)
 
 

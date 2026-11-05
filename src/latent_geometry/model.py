@@ -118,11 +118,11 @@ class LatentReasoner(nn.Module):
                              past_key_values, cached_token_count)
 
     def _answer_loss(self, hidden, prefix_length, answer_ids):
-        # Fixed start control is masked. Predict latent_end from the final latent,
-        # then every answer token (including the assistant terminator). Oracle
-        # slots and all original prompt tokens have no vocabulary loss.
-        labels = torch.cat((torch.tensor([[self.end_id]], device=hidden.device), answer_ids), dim=1)
-        first = prefix_length + self.config.num_latents - 1
+        # The fixed latent_end boundary is an input, not a prediction target.
+        # Its state predicts the first answer token; supervise the answer and
+        # assistant terminator only, just like the answer-only baseline.
+        labels = answer_ids
+        first = prefix_length + self.config.num_latents
         logits = self.backbone.logits(hidden[:, first:first + labels.shape[1]])
         return F.cross_entropy(logits.float().reshape(-1, logits.shape[-1]), labels.reshape(-1))
 
