@@ -29,10 +29,45 @@ class QwenBackbone(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
+        self.finetuning = "full"
+        self.boundary_ids = ()
+        self.boundary_embeddings = None
         if not hasattr(model.model, "language_model"):
             raise ValueError("Expected Qwen2.5-VL layout from transformers==4.57.1")
         self.model.model.visual.requires_grad_(False)
         self.model.model.visual.eval()
+
+    def configure_finetuning(self, config, boundary_ids=()):
+        self.finetuning = config.finetuning
+        if config.finetuning == "lora":
+            try:
+                from peft import LoraConfig, inject_adapter_in_model
+            except ImportError as exc:
+                raise ImportError("LoRA mode requires: pip install -e '.[lora]'") from exc
+            # Inject only into the decoder, keeping Qwen's direct decoder API intact.
+            inject_adapter_in_model(LoraConfig(
+                r=config.lora_rank, lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout, bias="none",
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
+            ), self.model.model.language_model)
+            for name, parameter in self.model.named_parameters():
+                if "lora_" in name:
+                    parameter.data = parameter.data.float()
+            if boundary_ids:
+                # Train only the two input boundary vectors, not the full vocabulary.
+                self.boundary_ids = tuple(boundary_ids)
+                ids = torch.tensor(boundary_ids, device=self.device)
+                self.boundary_embeddings = nn.Parameter(self.embed(ids).detach().float().clone())
+        self.set_trainable_parameters()
+
+    def set_trainable_parameters(self):
+        self.model.requires_grad_(self.finetuning == "full")
+        if self.finetuning == "lora":
+            for name, parameter in self.model.named_parameters():
+                if "lora_" in name:
+                    parameter.requires_grad_(True)
+        self.model.model.visual.requires_grad_(False)
 
     @property
     def hidden_size(self):
@@ -52,7 +87,13 @@ class QwenBackbone(nn.Module):
         return self
 
     def embed(self, ids):
-        return self.model.get_input_embeddings()(ids.to(self.device))
+        ids = ids.to(self.device)
+        embeddings = self.model.get_input_embeddings()(ids)
+        if self.boundary_embeddings is not None:
+            for index, token_id in enumerate(self.boundary_ids):
+                embeddings = torch.where((ids == token_id).unsqueeze(-1),
+                    self.boundary_embeddings[index].to(embeddings.dtype), embeddings)
+        return embeddings
 
     def token(self, token_id):
         return self.embed(torch.tensor([[token_id]], device=self.device))

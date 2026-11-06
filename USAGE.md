@@ -125,7 +125,7 @@ checkpoint configuration. Stage lengths and learning rates remain experimental.
 
 Shared images are hashed once and shared feature files are validated once during setup. Each example still loads its own pooled features; the dataset is not retained in GPU memory.
 
-The runner uses FP32 model/optimizer storage with CUDA BF16 autocast by default,
+Full fine-tuning uses FP32 model/optimizer storage with CUDA BF16 autocast by default,
 gradient clipping, gradient accumulation, and non-reentrant gradient
 checkpointing. CPU verification uses FP32. This version is **single-process**;
 multi-GPU sharding is not implemented, and `WORLD_SIZE > 1` is rejected. Profile
@@ -145,7 +145,57 @@ the original checkpoint is preserved. Checkpoint publication temporarily needs
 space for both the old and new files. Without this flag, all saves remain full
 checkpoints and are retained, as before.
 
-To resume the same stage:
+### Optional LoRA mode
+
+Full fine-tuning remains the default. For LoRA, install the optional dependency
+and use `configs/lora.json` for a new warmup or SFT run:
+
+```bash
+pip install -e '.[lora]'
+latent-geometry train \
+  --config configs/lora.json \
+  --manifest data/spatial-with-features.jsonl \
+  --stage warmup --output-dir runs/lora/warmup \
+  --steps 100 --learning-rate 1e-4 --accumulation-steps 8 \
+  --max-train-examples 800 --device cuda
+```
+
+The learning rate is a pilot starting point, not a tuned setting. Use the same
+LoRA configuration for the answer-only SFT comparison. The existing pilot script
+can run the entire comparison with `CONFIG=configs/lora.json`, a separate
+`RUN_DIR`, and your chosen `LEARNING_RATE`.
+
+LoRA targets the decoder's attention projections (`q_proj`, `k_proj`, `v_proj`,
+`o_proj`) and MLP projections (`gate_proj`, `up_proj`, `down_proj`). Rank, alpha,
+and dropout are configurable in JSON; defaults are 16, 32, and 0. The base model,
+including vision, ordinary token embeddings, and output head, is frozen. Two
+separate trainable input vectors replace the latent boundary embeddings, avoiding
+training the whole vocabulary matrix. The oracle projection is trained in warmup;
+the latent head is trained in alignment and refinement, as in full fine-tuning.
+
+On CUDA, LoRA loads frozen weights in BF16 and keeps adapters, boundary vectors,
+and trainable heads in FP32. `--no-bf16` uses FP32 weights and computation during
+training; CPU runs use FP32 by default. Gradient checkpointing remains enabled.
+LoRA reduces parameter/optimizer memory, but refinement still backpropagates
+through all 16 latent steps. Profile a complete optimizer step on your GPU;
+48–50 GB fit has not been measured.
+
+Alignment, refinement, resumption, and inference inherit LoRA settings from their
+checkpoint: use `--init-from` or `--resume` as above without another `--config`.
+Checkpoints still store the complete model, including frozen weights; they are
+not standalone PEFT adapter exports. `run.json` records the fine-tuning mode and
+trainable parameter count. Evaluation with `--original-model` stays adapter-free
+even when passed the LoRA configuration.
+
+To do full fine-tuning later, start a separate run with `configs/default.json`
+(or `"finetuning": "full"`). Existing configs and checkpoints without the new
+fields retain full fine-tuning behavior. A checkpoint's mode is fixed; converting
+or merging a LoRA checkpoint into a full fine-tuning run is not implemented.
+Install `.[test,lora]` to include the optional offline LoRA tests.
+
+### Resuming a run
+
+To resume the same stage in either mode:
 
 ```bash
 latent-geometry train \

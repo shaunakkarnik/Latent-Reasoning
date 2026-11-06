@@ -22,8 +22,16 @@ class LatentConfig:
     start_token: str = "<|latent_start|>"
     end_token: str = "<|latent_end|>"
     max_pixels: int = 512 * 28 * 28
+    finetuning: str = "full"
+    lora_rank: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.0
 
     def __post_init__(self):
+        if self.finetuning not in ("full", "lora"):
+            raise ValueError("finetuning must be 'full' or 'lora'")
+        if self.lora_rank < 1 or self.lora_alpha < 1 or not 0 <= self.lora_dropout < 1:
+            raise ValueError("LoRA rank/alpha must be positive and dropout must be in [0, 1)")
         if min(self.teacher_dim, self.pool_height, self.pool_width, self.max_pixels) <= 0:
             raise ValueError("Feature dimensions, pool sizes, and max_pixels must be positive")
         if self.alignment_weight < 0:

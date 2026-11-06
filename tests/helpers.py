@@ -6,7 +6,7 @@ from latent_geometry.config import LatentConfig
 from latent_geometry.model import LatentReasoner
 
 
-def tiny_model(*, num_latents=4):
+def tiny_model(*, num_latents=4, finetuning="full", dtype=torch.float32):
     from transformers import Qwen2_5_VLConfig, Qwen2_5_VLForConditionalGeneration
 
     config = Qwen2_5_VLConfig(
@@ -19,8 +19,9 @@ def tiny_model(*, num_latents=4):
         image_token_id=58, video_token_id=56, vision_start_token_id=57, vision_end_token_id=59,
     )
     config._attn_implementation = "sdpa"
-    backbone = QwenBackbone(Qwen2_5_VLForConditionalGeneration(config))
-    return LatentReasoner(backbone, LatentConfig(teacher_dim=8, pool_height=1, pool_width=num_latents), 60, 61)
+    backbone = QwenBackbone(Qwen2_5_VLForConditionalGeneration(config).to(dtype=dtype))
+    return LatentReasoner(backbone, LatentConfig(teacher_dim=8, pool_height=1, pool_width=num_latents,
+                                               finetuning=finetuning), 60, 61)
 
 
 def tiny_example():

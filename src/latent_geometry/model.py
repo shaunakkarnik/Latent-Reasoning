@@ -64,11 +64,13 @@ class LatentReasoner(nn.Module):
         self.backbone = backbone
         self.config = config
         self.start_id, self.end_id = start_id, end_id
+        backbone.configure_finetuning(config, (start_id, end_id))
+        head_dtype = torch.float32 if config.finetuning == "lora" else backbone.dtype
         rms = backbone.model.get_input_embeddings().weight.detach().float().square().mean().sqrt().item()
         self.oracle = OracleAdapter(config.teacher_dim, backbone.hidden_size, rms).to(backbone.device)
-        self.oracle.projection.to(dtype=backbone.dtype)
+        self.oracle.projection.to(dtype=head_dtype)
         self.latent_head = nn.Linear(backbone.hidden_size, backbone.hidden_size).to(
-            device=backbone.device, dtype=backbone.dtype)
+            device=backbone.device, dtype=head_dtype)
         nn.init.normal_(self.latent_head.weight, std=rms / backbone.hidden_size**0.5)
         nn.init.zeros_(self.latent_head.bias)
         self.set_stage(Stage.WARMUP)
@@ -77,8 +79,7 @@ class LatentReasoner(nn.Module):
         if Stage(stage) == Stage.SFT:
             raise ValueError("Use AnswerOnlyReasoner for sft")
         self.stage = Stage(stage)
-        self.backbone.requires_grad_(True)
-        self.backbone.model.model.visual.requires_grad_(False)
+        self.backbone.set_trainable_parameters()
         self.oracle.requires_grad_(self.stage == Stage.WARMUP)
         self.latent_head.requires_grad_(self.stage != Stage.WARMUP)
         # Clear stale gradients when changing stages before building a new optimizer.
@@ -91,7 +92,10 @@ class LatentReasoner(nn.Module):
         expected = (1, self.config.num_latents, self.config.teacher_dim)
         if tuple(features.shape) != expected or not torch.isfinite(features).all():
             raise ValueError(f"Expected finite teacher features with shape {expected}")
-        return self.oracle(features.to(self.backbone.device))
+        return self.oracle(features.to(self.backbone.device)).to(self.backbone.dtype)
+
+    def predict_latent(self, hidden):
+        return self.latent_head(hidden.to(self.latent_head.weight.dtype)).to(self.backbone.dtype)
 
     def rollout(self, prefix: Sequence, *, use_cache=False):
         """Generate exactly K vectors. Uncached mode preserves the full training graph."""
@@ -104,7 +108,7 @@ class LatentReasoner(nn.Module):
             output = self.backbone.decode(
                 decoder_input, past_key_values=past_key_values,
                 use_cache=use_cache, cached_token_count=cached_token_count)
-            vector = self.latent_head(output.last_hidden_state[:, -1:])
+            vector = self.predict_latent(output.last_hidden_state[:, -1:])
             vectors.append(vector)
             full_sequence = full_sequence.append(vector)
             if use_cache:
@@ -152,7 +156,7 @@ class LatentReasoner(nn.Module):
         if self.stage == Stage.ALIGNMENT:
             # State immediately BEFORE each target; never regress a state that
             # already consumed the target at the same position.
-            predictions = self.latent_head(hidden[:, prefix_length - 1:prefix_length - 1 + self.config.num_latents])
+            predictions = self.predict_latent(hidden[:, prefix_length - 1:prefix_length - 1 + self.config.num_latents])
             alignment_loss = F.mse_loss(predictions.float(), latents.float())
         loss = answer_loss + self.config.alignment_weight * alignment_loss
         return LossOutput(loss, answer_loss, alignment_loss, latents)

@@ -87,12 +87,15 @@ def test_shared_subset_matches_sft_and_latent_exposure(tmp_path, example):
     assert counts[1] == Counter({key: value * 3 for key, value in counts[0].items()})
 
 
-def test_training_runner_resume_matches_uninterrupted(tmp_path, example, monkeypatch):
+@pytest.mark.parametrize("finetuning", ["full", "lora"])
+def test_training_runner_resume_matches_uninterrupted(tmp_path, example, monkeypatch, finetuning):
+    if finetuning == "lora":
+        pytest.importorskip("peft")
     # Exercise real training-loop bookkeeping without downloading a tokenizer.
     records = [{"id": "fixture", "scene_id": "scene", "split": "train", "question": "Q", "answer": "A"}]
     encoder = FixtureEncoder(example)
     torch.manual_seed(42)
-    continuous = tiny_model()
+    continuous = tiny_model(finetuning=finetuning)
     continuous.oracle.set_statistics(torch.zeros(8), torch.ones(8))
     initial = tmp_path / "initial"
     continuous.set_stage(Stage.ALIGNMENT)
@@ -101,7 +104,7 @@ def test_training_runner_resume_matches_uninterrupted(tmp_path, example, monkeyp
                   accumulation_steps=2, learning_rate=1e-3, checkpoint_every=10,
                   gradient_checkpointing=True, bf16=False)
     train(continuous, output_dir=tmp_path / "continuous", steps=3, **kwargs)
-    interrupted = tiny_model()
+    interrupted = tiny_model(finetuning=finetuning)
     restore_checkpoint(initial, interrupted)
     train(interrupted, output_dir=tmp_path / "interrupted", steps=1, **kwargs)
     checkpoint = tmp_path / "interrupted" / "checkpoint-000001"

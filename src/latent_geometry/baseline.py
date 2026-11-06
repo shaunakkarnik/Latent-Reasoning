@@ -13,14 +13,14 @@ class AnswerOnlyReasoner(nn.Module):
         super().__init__()
         self.backbone, self.config = backbone, config
         self.start_id = self.end_id = None
+        backbone.configure_finetuning(config)
         self.set_stage(Stage.SFT)
 
     def set_stage(self, stage):
         if Stage(stage) != Stage.SFT:
             raise ValueError("Answer-only models support only the sft stage")
         self.stage = Stage.SFT
-        self.backbone.requires_grad_(True)
-        self.backbone.model.model.visual.requires_grad_(False)
+        self.backbone.set_trainable_parameters()
         self.zero_grad(set_to_none=True)
 
     def forward(self, inputs, answer_ids, teacher_features=None):

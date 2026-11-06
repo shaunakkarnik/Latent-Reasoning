@@ -6,6 +6,8 @@ import shutil
 
 import torch
 
+from .config import LatentConfig
+
 
 def capture_rng():
     result = {"torch": torch.get_rng_state(), "python": random.getstate()}
@@ -54,6 +56,14 @@ def restore_checkpoint(path, model, *, optimizer=None, restore_random=False):
     metadata = json.loads((path / "metadata.json").read_text())
     if metadata["format_version"] != 1:
         raise ValueError("Unsupported checkpoint format")
+    saved_config = LatentConfig.load(path / "latent_config.json")
+    if saved_config.finetuning != model.config.finetuning:
+        raise ValueError("Checkpoint fine-tuning mode does not match model")
+    if saved_config.finetuning == "lora" and any(
+        getattr(saved_config, key) != getattr(model.config, key)
+        for key in ("lora_rank", "lora_alpha", "lora_dropout")
+    ):
+        raise ValueError("Checkpoint LoRA settings do not match model")
     if (metadata["start_id"], metadata["end_id"]) != (model.start_id, model.end_id):
         raise ValueError("Checkpoint latent boundary token IDs do not match tokenizer")
     state = torch.load(path / "state.pt", map_location="cpu", weights_only=True)

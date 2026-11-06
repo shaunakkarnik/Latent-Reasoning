@@ -16,7 +16,7 @@ from .training import train
 
 
 def load_run(checkpoint=None, config_path=None, *, device="cpu", load_weights=True, answer_only=False,
-             dtype=torch.float32):
+             dtype=None, original_model=False):
     if checkpoint and config_path:
         raise ValueError("A checkpoint supplies its configuration; do not also pass --config")
     if checkpoint:
@@ -30,6 +30,12 @@ def load_run(checkpoint=None, config_path=None, *, device="cpu", load_weights=Tr
         config = LatentConfig.load(config_path)
     else:
         config = LatentConfig()
+    if original_model:
+        # The untouched baseline must stay adapter-free even with a LoRA experiment config.
+        config.finetuning = "full"
+    if dtype is None:
+        dtype = (torch.bfloat16 if config.finetuning == "lora" and torch.device(device).type == "cuda"
+                 else torch.float32)
     processor_path = Path(checkpoint) / "processor" if checkpoint else None
     options = {"add_latent_tokens": False} if answer_only else {}
     backbone, processor, start_id, end_id = load_student(
@@ -148,7 +154,8 @@ def main(argv=None):
         # New stages initialize weights here and start with a fresh optimizer.
         model, processor, encoder = load_run(
             checkpoint, args.config, device=args.device, load_weights=not bool(args.resume),
-            answer_only=args.stage == Stage.SFT.value)
+            answer_only=args.stage == Stage.SFT.value,
+            dtype=None if args.bf16 else torch.float32)
         if (args.stage == Stage.SFT.value) != isinstance(model, AnswerOnlyReasoner):
             raise ValueError("Cannot switch between answer-only and latent checkpoints")
         if args.init_from:
@@ -172,7 +179,7 @@ def main(argv=None):
             raise ValueError("--config is only for --original-model; checkpoints supply their configuration")
         dtype = torch.bfloat16 if args.bf16 and torch.device(args.device).type == "cuda" else torch.float32
         model, processor, encoder = load_run(args.checkpoint, args.config, device=args.device,
-            answer_only=args.original_model, dtype=dtype)
+            answer_only=args.original_model, dtype=dtype, original_model=args.original_model)
     else:
         model, processor, encoder = load_run(args.checkpoint, device=args.device)
     if args.command == "evaluate":

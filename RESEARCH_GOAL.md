@@ -10,6 +10,10 @@ Following LVR/LanteRn, the student generates continuous vectors and feeds them b
 
 Use Qwen2.5-VL-3B-Instruct with a trainable language model and frozen vision encoder/merger. Pool VGGT patch features to a 4×4 grid, normalize, and linearly project them into 16 question-independent oracle vectors.
 
+Support either full language-model fine-tuning or LoRA adaptation with the base
+model frozen. Use the same adaptation method for the latent model and answer-only
+fine-tuned baseline within each comparison.
+
 ## Training and inference
 
 1. **Warmup:** train the adapter and student to answer using oracle vectors.

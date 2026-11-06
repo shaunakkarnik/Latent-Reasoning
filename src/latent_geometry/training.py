@@ -83,6 +83,8 @@ def train(model, processor, encoder, records, *, output_dir, stage, steps=100,
             raise ValueError("Output has steps beyond this checkpoint; resume into a new output directory")
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "run.json").write_text(json.dumps({**settings,
+        "finetuning": model.config.finetuning,
+        "trainable_parameters": sum(p.numel() for p in parameters),
         "compact_checkpoints": compact_checkpoints}, indent=2) + "\n")
     previous_checkpoint = None
     if compact_checkpoints and resume:
